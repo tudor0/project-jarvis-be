@@ -1,137 +1,57 @@
-import asyncio
-import websockets
+# Example of how to integrate WebSocketManager into your existing FastAPI app
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from websocket_manager import WebSocketManager
 import json
-import logging
-from datetime import datetime
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Your existing FastAPI app
+app = FastAPI()
 
+# Create WebSocket manager instance
+websocket_manager = WebSocketManager()
 
-class WebSocketServer:
-    def __init__(self, host="0.0.0.0", port=8765):
-        self.host = host
-        self.port = port
-        self.connected_clients = set()
-
-    async def handle_client(self, websocket, path):
-        """Handle individual client connections"""
-        client_addr = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}"
-        logger.info(f"New client connected: {client_addr}")
-
-        # Add client to connected clients set
-        self.connected_clients.add(websocket)
-
-        try:
-            async for message in websocket:
-                await self.process_message(websocket, message, client_addr)
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.info(f"Client disconnected: {client_addr}")
-        except Exception as e:
-            logger.error(f"Error handling client {client_addr}: {e}")
-        finally:
-            # Remove client from connected clients set
-            self.connected_clients.discard(websocket)
-
-    async def process_message(self, websocket, message, client_addr):
-        """Process incoming messages from clients"""
-        try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            logger.info(f"[{timestamp}] Received from {client_addr}: {message}")
-
-            # Try to parse as JSON (optional - handles both plain text and JSON)
-            try:
-                data = json.loads(message)
-                if isinstance(data, dict):
-                    # Handle structured data
-                    message_type = data.get('type', 'unknown')
-                    content = data.get('content', data.get('message', ''))
-                    logger.info(f"Message type: {message_type}, Content: {content}")
-                else:
-                    # Handle JSON strings/arrays
-                    logger.info(f"JSON data: {data}")
-            except json.JSONDecodeError:
-                # Handle plain text messages
-                logger.info(f"Plain text message: {message}")
-
-            # Send acknowledgment back to client (optional)
-            response = {
-                "status": "received",
-                "timestamp": timestamp,
-                "message": "Message received successfully"
-            }
-            await websocket.send(json.dumps(response))
-
-        except Exception as e:
-            logger.error(f"Error processing message from {client_addr}: {e}")
-            error_response = {
-                "status": "error",
-                "message": f"Error processing message: {str(e)}"
-            }
-            await websocket.send(json.dumps(error_response))
-
-    async def broadcast_message(self, message):
-        """Broadcast message to all connected clients"""
-        if self.connected_clients:
-            await asyncio.gather(
-                *[client.send(message) for client in self.connected_clients],
-                return_exceptions=True
-            )
-
-    def get_connected_clients_count(self):
-        """Get number of connected clients"""
-        return len(self.connected_clients)
-
-    async def start_server(self):
-        """Start the WebSocket server"""
-        logger.info(f"Starting WebSocket server on {self.host}:{self.port}")
-
-        async with websockets.serve(
-                self.handle_client,
-                self.host,
-                self.port,
-                ping_interval=20,
-                ping_timeout=10,
-                max_size=1024 * 1024,  # 1MB max message size
-        ):
-            logger.info(f"WebSocket server running on ws://{self.host}:{self.port}")
-            await asyncio.Future()  # Run forever
-
-
-# Simple usage example
-async def simple_handler(websocket, path):
-    """Simplified handler function for basic use cases"""
-    client_addr = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}"
-    print(f"Client connected: {client_addr}")
-
+# Add WebSocket endpoint to your existing routes
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """Main WebSocket endpoint for tablet connections"""
+    await websocket_manager.connect(websocket)
     try:
-        async for message in websocket:
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            print(f"[{timestamp}] Received: {message}")
+        while True:
+            # Receive text from the frontend tablet
+            data = await websocket.receive_text()
+            # Process the message using the manager
+            await websocket_manager.handle_message(websocket, data)
+    except WebSocketDisconnect:
+        websocket_manager.disconnect(websocket)
 
-            # Send simple acknowledgment
-            await websocket.send(f"Received: {message}")
+# Optional: Add REST endpoints for monitoring WebSocket connections
+@app.get("/api/ws/status")
+async def websocket_status():
+    """Get WebSocket connection status"""
+    return {
+        "active_connections": websocket_manager.get_connection_count(),
+        "clients": websocket_manager.get_client_info(),
+        "status": "running"
+    }
 
-    except websockets.exceptions.ConnectionClosed:
-        print(f"Client disconnected: {client_addr}")
+@app.post("/api/ws/broadcast")
+async def broadcast_to_clients(message: dict):
+    """Broadcast a message to all connected WebSocket clients"""
+    try:
+        await websocket_manager.broadcast(json.dumps(message))
+        return {
+            "status": "success",
+            "message": "Broadcasted to all clients",
+            "recipient_count": websocket_manager.get_connection_count()
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Broadcast failed: {str(e)}"
+        }
 
-
-def main():
-    """Main function to run the WebSocket server"""
-    # Option 1: Use the WebSocketServer class (recommended)
-    server = WebSocketServer(host="0.0.0.0", port=8765)
-    asyncio.run(server.start_server())
-
-    # Option 2: Use simple handler (uncomment to use instead)
-    # asyncio.run(websockets.serve(simple_handler, "0.0.0.0", 8765))
-    # print("Simple WebSocket server running on ws://0.0.0.0:8765")
-    # asyncio.get_event_loop().run_forever()
-
-
-if __name__ == "__main__":
-    main()
+@app.get("/api/ws/send/{client_host}")
+async def send_to_specific_client(client_host: str, message: dict):
+    """Send message to a specific client (if you need this functionality later)"""
+    # This is a placeholder - you'd need to modify WebSocketManager to support this
+    return {"status": "Feature not implemented yet"}
