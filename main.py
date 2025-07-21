@@ -1,3 +1,4 @@
+
 # Example of how to integrate WebSocketManager into your existing FastAPI app
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
